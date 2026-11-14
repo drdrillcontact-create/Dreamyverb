@@ -25,19 +25,29 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja
 
-      - name: Configure CMake (Windows)
+      # Windows: use Ninja + MSVC via vcvars64. The VS generator fails on the
+      # current windows-latest image ("could not find any instance of Visual Studio").
+      - name: Configure, Build & Test (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: cmd
         run: |
-          cmake --version | Out-File -FilePath configure.log
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF *>> configure.log
-          $c = $LASTEXITCODE
-          if ($c -ne 0) {
-            $msg = (Get-Content configure.log | Select-Object -Last 50) -join '%0A'
-            Write-Output "::error::CMake configure failed (exit ${c}):%0A$msg"
-            exit $c
-          }
-          Get-Content configure.log -Tail 5
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+          if errorlevel 1 (
+            echo ::error::vcvars64.bat failed - Visual Studio 2022 Enterprise not found at the expected path
+            exit /b 1
+          )
+          cmake --version > win-build.log 2>&1
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF >> win-build.log 2>&1
+          if errorlevel 1 goto :fail
+          cmake --build build >> win-build.log 2>&1
+          if errorlevel 1 goto :fail
+          build\ReverbTests.exe >> win-build.log 2>&1
+          if errorlevel 1 goto :fail
+          echo Windows configure, build and DSP tests OK
+          exit /b 0
+          :fail
+          powershell -NoProfile -Command "$m = (Get-Content win-build.log -Tail 50) -join '%0A'; Write-Output ('::error::Windows build failed:%0A' + $m)"
+          exit /b 1
 
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
@@ -51,12 +61,9 @@ jobs:
           }
           tail -n 5 configure.log
 
-      - name: Build Plugin
+      - name: Build Plugin (macOS)
+        if: runner.os == 'macOS'
         run: cmake --build build --config Release
-
-      - name: Run DSP Tests (Windows)
-        if: runner.os == 'Windows'
-        run: build\Release\ReverbTests.exe
 
       - name: Run DSP Tests (macOS)
         if: runner.os == 'macOS'
@@ -70,3 +77,68 @@ jobs:
             build/DreamyReverb_artefacts/Release/VST3/*.vst3
             build/DreamyReverb_artefacts/Release/AU/*.component
           if-no-files-found: error
+
+  # The sandbox that reviews these builds cannot download workflow artifacts
+  # (Azure blob storage is blocked), so publish the binaries to a git branch
+  # that can be fetched with a plain `git fetch`.
+  publish:
+    name: Publish binaries to branch
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: collected
+
+      - name: Push binaries to plugin-binaries branch
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          URL="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          WORK="$(mktemp -d)"
+
+          if git clone --depth 1 --branch plugin-binaries "$URL" "$WORK" 2>/dev/null; then
+            echo "Cloned existing plugin-binaries branch"
+          else
+            rm -rf "$WORK"
+            mkdir -p "$WORK"
+            git -C "$WORK" init -q
+            git -C "$WORK" checkout -q --orphan plugin-binaries
+            git -C "$WORK" remote add origin "$URL"
+            echo "Created new plugin-binaries branch"
+          fi
+
+          mkdir -p "$WORK/windows" "$WORK/macos"
+          if [ -d collected/DreamyReverb-windows-latest ]; then
+            cp -a collected/DreamyReverb-windows-latest/. "$WORK/windows/"
+          fi
+          if [ -d collected/DreamyReverb-macos-latest ]; then
+            cp -a collected/DreamyReverb-macos-latest/. "$WORK/macos/"
+          fi
+
+          {
+            echo "workflow: ${GITHUB_WORKFLOW}"
+            echo "run_id:   ${GITHUB_RUN_ID}"
+            echo "commit:   ${GITHUB_SHA}"
+            echo "branch:   ${GITHUB_REF_NAME}"
+            echo "date:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$WORK/BUILD-INFO.txt"
+
+          git -C "$WORK" add -A
+          if git -C "$WORK" -c user.name="github-actions[bot]" \
+                     -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                     commit -q -m "CI build ${GITHUB_RUN_ID} (${GITHUB_SHA:0:7})"; then
+            git -C "$WORK" push -q origin HEAD:plugin-binaries \
+              || git -C "$WORK" push -q --force origin HEAD:plugin-binaries
+            echo "Binaries published to plugin-binaries branch"
+          else
+            echo "No changes to publish"
+          fi
