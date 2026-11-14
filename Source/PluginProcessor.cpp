@@ -89,12 +89,22 @@ void DreamyReverbAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
+    auto updateMeters = [this, &buffer]() {
+        const int numCh = juce::jmin(2, buffer.getNumChannels());
+        const int n = buffer.getNumSamples();
+        for (int ch = 0; ch < numCh; ++ch)
+            outputPeaks[ch].store(buffer.getMagnitude(ch, 0, n), std::memory_order_relaxed);
+        for (int ch = numCh; ch < 2; ++ch)
+            outputPeaks[ch].store(0.0f, std::memory_order_relaxed);
+    };
+
     const bool bypassed = *parameters.getRawParameterValue("bypass") > 0.5f;
     if (bypassed) {
         if (!wasBypassed) {
             engine.reset();
             wasBypassed = true;
         }
+        updateMeters();
         return;
     }
     wasBypassed = false;
@@ -111,6 +121,7 @@ void DreamyReverbAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, 
     p.lpf     = *parameters.getRawParameterValue("lpf") > 0.5f;
 
     engine.process(buffer, p);
+    updateMeters();
 }
 
 bool DreamyReverbAudioProcessor::hasEditor() const { return true; }

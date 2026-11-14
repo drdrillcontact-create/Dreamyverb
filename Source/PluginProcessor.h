@@ -33,6 +33,9 @@ public:
 
     juce::AudioProcessorValueTreeState parameters;
 
+    // Per-channel output peak levels (linear, 0..~1) for the editor's meters
+    std::atomic<float> outputPeaks[2] {};
+
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
