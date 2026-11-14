@@ -5,6 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -12,14 +13,13 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
@@ -27,19 +27,28 @@ jobs:
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF
 
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF
 
       - name: Build Plugin
         run: cmake --build build --config Release
 
+      - name: Run DSP Tests (Windows)
+        if: runner.os == 'Windows'
+        run: build\Release\ReverbTests.exe
+
+      - name: Run DSP Tests (macOS)
+        if: runner.os == 'macOS'
+        run: ./build/ReverbTests
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: DreamyReverb-ExactUI-${{ matrix.os }}
+          name: DreamyReverb-${{ matrix.os }}
           path: |
             build/DreamyReverb_artefacts/Release/VST3/*.vst3
             build/DreamyReverb_artefacts/Release/AU/*.component
+          if-no-files-found: error

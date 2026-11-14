@@ -12,7 +12,9 @@ const juce::String DreamyReverbAudioProcessor::getName() const { return JucePlug
 bool DreamyReverbAudioProcessor::acceptsMidi() const { return false; }
 bool DreamyReverbAudioProcessor::producesMidi() const { return false; }
 bool DreamyReverbAudioProcessor::isMidiEffect() const { return false; }
-double DreamyReverbAudioProcessor::getTailLengthSeconds() const { return 5.0; }
+double DreamyReverbAudioProcessor::getTailLengthSeconds() const {
+    return (double)(*parameters.getRawParameterValue("decay")) + 1.0;
+}
 
 int DreamyReverbAudioProcessor::getNumPrograms() { return 1; }
 int DreamyReverbAudioProcessor::getCurrentProgram() { return 0; }
@@ -21,25 +23,52 @@ const juce::String DreamyReverbAudioProcessor::getProgramName(int) { return {}; 
 void DreamyReverbAudioProcessor::changeProgramName(int, const juce::String&) {}
 
 juce::AudioProcessorValueTreeState::ParameterLayout DreamyReverbAudioProcessor::createParameterLayout() {
+    using P = juce::ParameterID;
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("decay", "Decay", juce::NormalisableRange<float>(0.1f, 10.0f, 0.1f), 4.2f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("size", "Size", juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 85.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("damping", "Damping", juce::NormalisableRange<float>(100.0f, 20000.0f, 1.0f, 0.3f), 4500.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("shimmer", "Shimmer", juce::NormalisableRange<float>(0.0f, 24.0f, 1.0f), 12.0f));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("mix", "Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 40.0f));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"decay", 1}, "Decay",
+        juce::NormalisableRange<float>(0.1f, 10.0f, 0.1f), 4.2f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"size", 1}, "Size",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 85.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"damping", 1}, "Damping",
+        juce::NormalisableRange<float>(100.0f, 20000.0f, 1.0f, 0.3f), 4500.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"shimmer", 1}, "Shimmer",
+        juce::NormalisableRange<float>(0.0f, 12.0f, 1.0f), 6.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"mix", 1}, "Mix",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 40.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"depth", 1}, "Mod Depth",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 25.0f));
+
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(
+        P{"rate", 1}, "Mod Rate",
+        juce::NormalisableRange<float>(0.05f, 8.0f, 0.01f, 0.5f), 0.5f));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        P{"hpf", 1}, "High-Pass Filter", false));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        P{"lpf", 1}, "Low-Pass Filter", false));
+
+    params.push_back(std::make_unique<juce::AudioParameterBool>(
+        P{"bypass", 1}, "Bypass", false));
 
     return { params.begin(), params.end() };
 }
 
 void DreamyReverbAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
-    currentSampleRate = sampleRate;
-    delayLines.resize(2);
-    for (auto& channel : delayLines) {
-        channel.resize(static_cast<int>(sampleRate * 4.0), 0.0f);
-    }
-    delayIndices.assign(2, 0);
-    filterStates.assign(2, 0.0f);
+    engine.prepare(sampleRate, samplesPerBlock, 2);
+    wasBypassed = false;
 }
 
 void DreamyReverbAudioProcessor::releaseResources() {}
@@ -53,41 +82,35 @@ bool DreamyReverbAudioProcessor::isBusesLayoutSupported(const BusesLayout& layou
 
 void DreamyReverbAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
     juce::ScopedNoDenormals noDenormals;
+
     auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
 
-    float decay = *parameters.getRawParameterValue("decay") / 10.0f * 0.95f;
-    float damping = *parameters.getRawParameterValue("damping");
-    float shimmer = *parameters.getRawParameterValue("shimmer") / 24.0f;
-    float mix = *parameters.getRawParameterValue("mix") / 100.0f;
-
-    int numSamples = buffer.getNumSamples();
-    for (int channel = 0; channel < totalNumInputChannels; ++channel) {
-        auto* channelData = buffer.getWritePointer(channel);
-        auto& dLine = delayLines[channel];
-        int& dIndex = delayIndices[channel];
-        float& fState = filterStates.getUnchecked(channel);
-
-        float dampingCoeff = std::exp(-2.0f * juce::MathConstants<float>::pi * damping / static_cast<float>(currentSampleRate));
-
-        for (int i = 0; i < numSamples; ++i) {
-            float in = channelData[i];
-            int delayLength = static_cast<int>(currentSampleRate * 0.15);
-            int readIndex = (dIndex - delayLength + dLine.size()) % dLine.size();
-            float delayed = dLine[readIndex];
-
-            fState = delayed * (1.0f - dampingCoeff) + fState * dampingCoeff;
-            float wet = fState * decay + (in * 0.5f);
-
-            dLine[dIndex] = in + wet * decay * (1.0f + shimmer * 0.15f * std::sin(i * 0.02f));
-            dIndex = (dIndex + 1) % dLine.size();
-
-            channelData[i] = in * (1.0f - mix) + wet * mix;
+    const bool bypassed = *parameters.getRawParameterValue("bypass") > 0.5f;
+    if (bypassed) {
+        if (!wasBypassed) {
+            engine.reset();
+            wasBypassed = true;
         }
+        return;
     }
+    wasBypassed = false;
+
+    ReverbEngine::Parameters p;
+    p.decay   = *parameters.getRawParameterValue("decay");
+    p.size    = *parameters.getRawParameterValue("size");
+    p.damping = *parameters.getRawParameterValue("damping");
+    p.shimmer = *parameters.getRawParameterValue("shimmer");
+    p.mix     = *parameters.getRawParameterValue("mix");
+    p.depth   = *parameters.getRawParameterValue("depth");
+    p.rate    = *parameters.getRawParameterValue("rate");
+    p.hpf     = *parameters.getRawParameterValue("hpf") > 0.5f;
+    p.lpf     = *parameters.getRawParameterValue("lpf") > 0.5f;
+
+    engine.process(buffer, p);
 }
 
 bool DreamyReverbAudioProcessor::hasEditor() const { return true; }

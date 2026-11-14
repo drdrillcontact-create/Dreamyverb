@@ -9,6 +9,9 @@ public:
                           float sliderPosProportional, float rotaryStartAngle,
                           float rotaryEndAngle, juce::Slider& slider) override
     {
+        if (! slider.isEnabled())
+            g.setOpacity(0.4f); // greyed-out look when locked / bypassed
+
         auto bounds = juce::Rectangle<int>(x, y, width, height).toFloat();
         auto radius = juce::jmin(bounds.getWidth(), bounds.getHeight()) / 2.0f - 6.0f;
         auto centreX = bounds.getCentreX();

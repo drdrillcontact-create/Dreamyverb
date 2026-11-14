@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "ReverbEngine.h"
 
 class DreamyReverbAudioProcessor : public juce::AudioProcessor {
 public:
@@ -35,10 +36,8 @@ public:
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    double currentSampleRate = 44100.0;
-    std::vector<std::vector<float>> delayLines;
-    std::vector<int> delayIndices;
-    std::vector<float> filterStates;
+    ReverbEngine engine;
+    bool wasBypassed = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DreamyReverbAudioProcessor)
 };
