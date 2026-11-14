@@ -65,6 +65,12 @@ jobs:
         if: runner.os == 'macOS'
         run: ./build/ReverbTests
 
+      - name: Ad-hoc sign plugins (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --sign - "build/DreamyReverb_artefacts/Release/AU/Dreamy Reverb.component"
+          codesign --force --sign - "build/DreamyReverb_artefacts/Release/VST3/Dreamy Reverb.vst3"
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -119,6 +125,10 @@ jobs:
           if [ -d collected/DreamyReverb-macos-latest ]; then
             cp -a collected/DreamyReverb-macos-latest/. "$WORK/macos/"
           fi
+
+          # actions/upload-artifact strips file permissions; restore the
+          # executable bit on the Mach-O binaries inside the plugin bundles.
+          find "$WORK/macos" -type f -path "*/Contents/MacOS/*" -exec chmod 755 {} + 2>/dev/null || true
 
           {
             echo "workflow: ${GITHUB_WORKFLOW}"
