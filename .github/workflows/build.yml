@@ -27,11 +27,29 @@ jobs:
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF
+        shell: pwsh
+        run: |
+          cmake --version | Out-File -FilePath configure.log
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF *>> configure.log
+          $c = $LASTEXITCODE
+          if ($c -ne 0) {
+            $msg = (Get-Content configure.log | Select-Object -Last 50) -join '%0A'
+            Write-Output "::error::CMake configure failed (exit ${c}):%0A$msg"
+            exit $c
+          }
+          Get-Content configure.log -Tail 5
 
       - name: Configure CMake (macOS)
         if: runner.os == 'macOS'
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF
+        shell: bash
+        run: |
+          cmake --version > configure.log 2>&1
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DDREAMY_BUILD_TESTS=ON -DDREAMY_COPY_PLUGIN_AFTER_BUILD=OFF >> configure.log 2>&1 || {
+            msg=$(tail -n 50 configure.log | sed -e 's/%/%25/g' -e 's/\r$//' -e 's/$/%0A/' | tr -d '\n')
+            echo "::error::CMake configure failed:%0A$msg"
+            exit 1
+          }
+          tail -n 5 configure.log
 
       - name: Build Plugin
         run: cmake --build build --config Release
